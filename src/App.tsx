@@ -1,8 +1,8 @@
 ﻿import { useEffect, useRef, useState  } from "react"
 import { ToolNavbar } from "./Components/ToolNavbar"
+import { PropertiesPanel } from "./Components/PropertiesPanel"
 
 type Point = { x: number; y: number };
-// type Stroke = { points: Point[]; color: string; width: number };
 
 type ElementType = "pen" | "eraser" | "select" | "rectangle" | "diamond" | "ellipse" | "arrow" | "line" | "text" | "image";
 
@@ -18,15 +18,20 @@ type Element = {
   points: Point[]
 }
 
-
-
-
 function App() {
     const canvasref = useRef<HTMLCanvasElement>(null);
     const ctxref = useRef<CanvasRenderingContext2D | null>(null);
     const isDrawingRef = useRef(false);
     const elementRefs = useRef<Element[]>([]);
-    const currentElementRef = useRef<Element | null>(null);
+  const currentElementRef = useRef<Element | null>(null);
+  const historyRef = useRef<Element[][]>([]);
+  const redoRef = useRef<Element[][]>([]);
+
+    const [activeTool, setActiveTool]   = useState("pen");
+    const [strokeColor, setStrokeColor] = useState("#ffffff");
+    const [bgColor, setBgColor]         = useState("transparent");
+    const [strokeWidth, setStrokeWidth] = useState(2);
+    const [opacity, setOpacity]         = useState(100);
 
     const redraw = () => {
         const ctx = ctxref.current;
@@ -37,7 +42,7 @@ function App() {
 
         for (const el of elementRefs.current) {
             ctx.strokeStyle = el.strokeColor;
-          ctx.lineWidth = el.strokeWidth;
+            ctx.lineWidth = el.strokeWidth;
 
             if (el.type === "pen") {
                 ctx.beginPath();
@@ -45,10 +50,10 @@ function App() {
                     if (i === 0) ctx.moveTo(p.x, p.y);
                     else ctx.lineTo(p.x, p.y);
                 });
-            ctx.stroke();
-              
-            } else if (el.type === "rectangle")
+                ctx.stroke();
+            } else if (el.type === "rectangle") {
                 ctx.strokeRect(el.x, el.y, el.width, el.height);
+            }
         }
     }
 
@@ -74,6 +79,8 @@ function App() {
 
     const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
       isDrawingRef.current = true;
+      historyRef.current.push([...elementRefs.current]);
+      redoRef.current = [];
 
       const point = getPoint(e);
       const element: Element = {
@@ -83,15 +90,14 @@ function App() {
         y: point.y,
         width: 0,
         height: 0,
-        strokeColor: "white",
-        strokeWidth: 1,
+        strokeColor: strokeColor,
+        strokeWidth: strokeWidth,
         points: [point],
       }
 
       elementRefs.current.push(element);
       currentElementRef.current = element;
       redraw();
-
     }
 
     const handlePointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
@@ -108,15 +114,34 @@ function App() {
 
     const handlePointerUp = () => {
         isDrawingRef.current = false;
-        currentElementRef.current = null;
+      currentElementRef.current = null;
     }
 
-    const handleClear = () => {
-        elementRefs.current = [];
-        redraw();
+    const handleUndo = () => {
+      if (historyRef.current.length === 0) return;
+      redoRef.current.push([...elementRefs.current]);
+      elementRefs.current = [...historyRef.current.pop()!];
+      redraw();
     }
 
-    const [activeTool, setActiveTool] = useState("pen");
+
+    const handleRedo = () => {
+      if (redoRef.current.length === 0) return;
+      historyRef.current.push([...elementRefs.current]);
+      elementRefs.current = [...redoRef.current.pop()!];
+      redraw();
+    }
+
+    useEffect(() => {
+      const handleKey = (e: KeyboardEvent) => {
+        if (e.ctrlKey && e.key === "z") handleUndo();
+        if (e.ctrlKey && e.key === "y") handleRedo();
+      }
+      window.addEventListener("keydown", handleKey);
+      return () => {
+        window.removeEventListener("keydown", handleKey);
+      }
+    }, [])
 
     return (
       <div className="relative w-screen h-screen overflow-hidden bg-[#1e1e2e]">
@@ -124,6 +149,14 @@ function App() {
         <div className="fixed top-3 left-1/2 -translate-x-1/2 z-10">
           <ToolNavbar activeTool={activeTool} setActiveTool={setActiveTool}/>
         </div>
+
+        <PropertiesPanel
+          strokeColor={strokeColor} setStrokeColor={setStrokeColor}
+          bgColor={bgColor}         setBgColor={setBgColor}
+          strokeWidth={strokeWidth} setStrokeWidth={setStrokeWidth}
+          opacity={opacity}         setOpacity={setOpacity}
+        />
+
         <canvas
             ref={canvasref}
             onPointerDown={handlePointerDown}
@@ -132,7 +165,7 @@ function App() {
             onPointerLeave={handlePointerUp}
             className="absolute inset-0 cursor-crosshair touch-none"
         />
-        </div>
+      </div>
     )
 }
 
