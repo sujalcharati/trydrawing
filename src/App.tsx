@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react"
 import { ToolNavbar } from "./Components/ToolNavbar"
-import { PropertiesPanel } from "./Components/PropertiesPanel"
+import { PropertiesPanel, DEFAULT_STYLE, FONT_STACKS, fieldsFor } from "./Components/PropertiesPanel"
+import type { Style, StrokeStyle, FontFamily, TextAlign } from "./Components/PropertiesPanel"
 
 type Point = { x: number; y: number }
 type ElementType = "pen" | "eraser" | "select" | "rectangle" | "diamond" | "ellipse" | "arrow" | "line" | "text" | "image"
@@ -14,12 +15,25 @@ type Element = {
   width: number
   height: number
   strokeColor: string
+  backgroundColor: string
   strokeWidth: number
+  strokeStyle: StrokeStyle
+  opacity: number
   fontSize: number
+  fontFamily: FontFamily
+  textAlign: TextAlign
   points: Point[]
 }
 
-const FONT_SIZE         = 16
+const fontString = (el: { fontSize: number; fontFamily: FontFamily }) => `${el.fontSize}px ${FONT_STACKS[el.fontFamily]}`
+
+function dashFor(el: Element): number[] {
+  const w = Math.max(el.strokeWidth, 1)
+  if (el.strokeStyle === "dashed") return [w * 4 + 4, w * 3 + 3]
+  if (el.strokeStyle === "dotted") return [1, w * 2 + 3]
+  return []
+}
+
 const LINE_HEIGHT_RATIO = 1.35
 const PAD_X             = 4
 const PAD_Y             = 2
@@ -42,7 +56,7 @@ function getBounds(ctx: CanvasRenderingContext2D, el: Element): Bounds {
       return { minX: Math.min(...xs), minY: Math.min(...ys), maxX: Math.max(...xs), maxY: Math.max(...ys) }
     }
     case "text": {
-      ctx.font = `${el.fontSize}px sans-serif`
+      ctx.font = fontString(el)
       const lines = (el.text ?? "").split("\n")
       const maxW  = Math.max(...lines.map(l => ctx.measureText(l).width), 20)
       const h     = lines.length * el.fontSize * LINE_HEIGHT_RATIO + PAD_Y * 2
@@ -92,8 +106,19 @@ function hitTestElement(ctx: CanvasRenderingContext2D, point: Point, el: Element
 }
 
 function drawElement(ctx: CanvasRenderingContext2D, el: Element) {
+  ctx.save()
+  ctx.globalAlpha = el.opacity / 100
   ctx.strokeStyle = el.strokeColor
   ctx.lineWidth   = el.strokeWidth
+  ctx.setLineDash(dashFor(el))
+
+  const fillAndStroke = () => {
+    if (el.backgroundColor !== "transparent") {
+      ctx.fillStyle = el.backgroundColor
+      ctx.fill()
+    }
+    ctx.stroke()
+  }
 
   switch (el.type) {
     case "pen":
@@ -102,13 +127,15 @@ function drawElement(ctx: CanvasRenderingContext2D, el: Element) {
       ctx.stroke()
       break
     case "rectangle":
-      ctx.strokeRect(el.x, el.y, el.width, el.height)
+      ctx.beginPath()
+      ctx.rect(el.x, el.y, el.width, el.height)
+      fillAndStroke()
       break
     case "ellipse": {
       const cx = el.x + el.width / 2, cy = el.y + el.height / 2
       ctx.beginPath()
       ctx.ellipse(cx, cy, Math.abs(el.width / 2), Math.abs(el.height / 2), 0, 0, Math.PI * 2)
-      ctx.stroke()
+      fillAndStroke()
       break
     }
     case "line":
@@ -125,7 +152,7 @@ function drawElement(ctx: CanvasRenderingContext2D, el: Element) {
       ctx.lineTo(cx, el.y + el.height)
       ctx.lineTo(el.x, cy)
       ctx.closePath()
-      ctx.stroke()
+      fillAndStroke()
       break
     }
     case "arrow": {
@@ -135,26 +162,33 @@ function drawElement(ctx: CanvasRenderingContext2D, el: Element) {
       ctx.beginPath()
       ctx.moveTo(el.x, el.y)
       ctx.lineTo(ex, ey)
-      ctx.lineTo(ex - hl * Math.cos(ang - ha), ey - hl * Math.sin(ang - ha))
-      ctx.moveTo(ex, ey)
+      ctx.stroke()
+      ctx.setLineDash([])
+      ctx.beginPath()
+      ctx.moveTo(ex - hl * Math.cos(ang - ha), ey - hl * Math.sin(ang - ha))
+      ctx.lineTo(ex, ey)
       ctx.lineTo(ex - hl * Math.cos(ang + ha), ey - hl * Math.sin(ang + ha))
       ctx.stroke()
       break
     }
     case "text": {
       ctx.fillStyle    = el.strokeColor
-      ctx.font         = `${el.fontSize}px sans-serif`
+      ctx.font         = fontString(el)
       ctx.textAlign    = "left"
       ctx.textBaseline = "top"
-      const lh = el.fontSize * LINE_HEIGHT_RATIO
-      ;(el.text ?? "").split("\n").forEach((line, i) => {
-        ctx.fillText(line, el.x + PAD_X, el.y + PAD_Y + i * lh)
+      const lh     = el.fontSize * LINE_HEIGHT_RATIO
+      const lines  = (el.text ?? "").split("\n")
+      const widths = lines.map(l => ctx.measureText(l).width)
+      const maxW   = Math.max(...widths, 20)
+      lines.forEach((line, i) => {
+        const off = el.textAlign === "center" ? (maxW - widths[i]) / 2 : el.textAlign === "right" ? maxW - widths[i] : 0
+        ctx.fillText(line, el.x + PAD_X + off, el.y + PAD_Y + i * lh)
       })
-      ctx.textBaseline = "alphabetic"
       break
     }
     default: break
   }
+  ctx.restore()
 }
 
 function handlePositions(b: Bounds): Record<Handle, Point> {
@@ -237,7 +271,15 @@ function resizeElement(orig: Element, oldB: Bounds, handle: Handle, dx: number, 
   }
 }
 
-function App() {  const canvasRef   = useRef<HTMLCanvasElement>(null)
+function fitTextarea(ta: HTMLTextAreaElement) {
+  ta.style.height = "auto"
+  ta.style.height = `${ta.scrollHeight}px`
+  ta.style.width  = "auto"
+  ta.style.width  = `${ta.scrollWidth + PAD_X * 2}px`
+}
+
+function App() {
+  const canvasRef   = useRef<HTMLCanvasElement>(null)
   const ctxRef      = useRef<CanvasRenderingContext2D | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
@@ -256,11 +298,12 @@ function App() {  const canvasRef   = useRef<HTMLCanvasElement>(null)
     origBounds: Bounds; handle: Handle | null; pushed: boolean
   } | null>(null)
   const [activeTool, setActiveTool]   = useState("pen")
-  const [strokeColor, setStrokeColor] = useState("#ffffff")
-  const [bgColor,     setBgColor]     = useState("transparent")
-  const [strokeWidth, setStrokeWidth] = useState(2)
-  const [opacity,     setOpacity]     = useState(100)
-  const [textPos, setTextPos] = useState<{ x: number; y: number; sx: number; sy: number; fontSize: number } | null>(null)
+  const [style, setStyle] = useState<Style>(DEFAULT_STYLE)
+  const [, setVersion] = useState(0)
+  const bump = () => setVersion(v => v + 1)
+  const shownSelRef      = useRef<string | null>(null)
+  const lastStyleEditRef = useRef<{ key: string; t: number }>({ key: "", t: 0 })
+  const [textPos, setTextPos] = useState<{ x: number; y: number; sx: number; sy: number } | null>(null)
   const [isLocked, setIsLocked] = useState(false);
   const [isPanning, setIsPanning] = useState(false)
 
@@ -291,6 +334,10 @@ function App() {  const canvasRef   = useRef<HTMLCanvasElement>(null)
       if (sel) drawSelection(ctx, getBounds(ctx, sel))
       else selectedIdRef.current = null
     }
+    if (shownSelRef.current !== selectedIdRef.current) {
+      shownSelRef.current = selectedIdRef.current
+      bump()
+    }
   }
 
   const undo = () => {
@@ -298,6 +345,7 @@ function App() {  const canvasRef   = useRef<HTMLCanvasElement>(null)
     redoRef.current.push([...elementRefs.current])
     elementRefs.current = historyRef.current.pop()!
     redraw()
+    bump()
   }
 
   const redo = () => {
@@ -305,6 +353,7 @@ function App() {  const canvasRef   = useRef<HTMLCanvasElement>(null)
     historyRef.current.push([...elementRefs.current])
     elementRefs.current = redoRef.current.pop()!
     redraw()
+    bump()
   }
 
   useEffect(() => {
@@ -339,13 +388,15 @@ function App() {  const canvasRef   = useRef<HTMLCanvasElement>(null)
     const ta = textareaRef.current
     if (!ta) return
     ta.value = editingElRef.current?.text ?? ""
-    ta.style.height = "auto"
-    ta.style.height = `${ta.scrollHeight}px`
-    ta.style.width  = "auto"
-    ta.style.width  = `${ta.scrollWidth + PAD_X * 2}px`
+    fitTextarea(ta)
     ta.focus()
     ta.selectionStart = ta.selectionEnd = ta.value.length
   }, [textPos])
+
+  // font family / size changes while editing need the textarea re-measured
+  useLayoutEffect(() => {
+    if (textareaRef.current && textPos) fitTextarea(textareaRef.current)
+  })
 
   const commitText = () => {
     const ta  = textareaRef.current
@@ -366,7 +417,7 @@ function App() {  const canvasRef   = useRef<HTMLCanvasElement>(null)
       elementRefs.current.push({
         id: crypto.randomUUID(), type: "text", text: val,
         x: pos.x, y: pos.y, width: 0, height: 0,
-        strokeColor, strokeWidth, fontSize: FONT_SIZE, points: [],
+        ...style, points: [],
       })
     }
 
@@ -469,10 +520,10 @@ function App() {  const canvasRef   = useRef<HTMLCanvasElement>(null)
       if (hit) {
         editingElRef.current = hit
         redraw(hit.id)
-        setTextPos({ x: hit.x, y: hit.y, sx: hit.x + panRef.current.x, sy: hit.y + panRef.current.y, fontSize: hit.fontSize })
+        setTextPos({ x: hit.x, y: hit.y, sx: hit.x + panRef.current.x, sy: hit.y + panRef.current.y })
       } else {
         editingElRef.current = null
-        setTextPos({ x: point.x, y: point.y, sx: point.x + panRef.current.x, sy: point.y + panRef.current.y, fontSize: FONT_SIZE })
+        setTextPos({ x: point.x, y: point.y, sx: point.x + panRef.current.x, sy: point.y + panRef.current.y })
       }
       return
     }
@@ -498,7 +549,7 @@ function App() {  const canvasRef   = useRef<HTMLCanvasElement>(null)
     const el: Element = {
       id: crypto.randomUUID(), type: activeTool as ElementType,
       x: point.x, y: point.y, width: 0, height: 0,
-      strokeColor, strokeWidth, fontSize: FONT_SIZE, points: [point],
+      ...style, points: [point],
     }
     elementRefs.current.push(el)
     currentElementRef.current = el
@@ -576,7 +627,30 @@ function App() {  const canvasRef   = useRef<HTMLCanvasElement>(null)
   }
 
   const isEditing = textPos !== null
-  const editFontSize = textPos?.fontSize ?? FONT_SIZE
+
+  // the panel edits whatever is being edited / selected, else the defaults for the next shape
+  const targetId  = editingElRef.current?.id ?? selectedIdRef.current
+  const targetEl  = targetId ? elementRefs.current.find(e => e.id === targetId) : undefined
+  const panelType = targetEl ? targetEl.type : activeTool === "select" ? null : activeTool
+  const panelVals: Style = targetEl ?? style
+  const textStyle: Style = editingElRef.current && targetEl ? targetEl : style
+
+  const applyStyle = (patch: Partial<Style>) => {
+    setStyle(s => ({ ...s, ...patch }))
+    if (!targetEl) return
+    if (!editingElRef.current) {
+      // coalesce rapid edits of the same property (e.g. dragging the opacity slider) into one undo step
+      const key = Object.keys(patch).join(",") + targetEl.id, now = Date.now()
+      if (lastStyleEditRef.current.key !== key || now - lastStyleEditRef.current.t > 800) {
+        historyRef.current.push([...elementRefs.current])
+        redoRef.current = []
+      }
+      lastStyleEditRef.current = { key, t: now }
+    }
+    elementRefs.current = elementRefs.current.map(el => el.id === targetEl.id ? { ...el, ...patch } : el)
+    redraw(editingElRef.current?.id)
+    bump()
+  }
 
   return (
     <div className="relative w-screen h-screen overflow-hidden bg-[#1e1e2e]">
@@ -585,12 +659,7 @@ function App() {  const canvasRef   = useRef<HTMLCanvasElement>(null)
         <ToolNavbar activeTool={activeTool} setActiveTool={setActiveTool} isLocked={isLocked} setIsLocked={setIsLocked} />
       </div>
 
-      <PropertiesPanel
-        strokeColor={strokeColor} setStrokeColor={setStrokeColor}
-        bgColor={bgColor}         setBgColor={setBgColor}
-        strokeWidth={strokeWidth} setStrokeWidth={setStrokeWidth}
-        opacity={opacity}         setOpacity={setOpacity}
-      />
+      <PropertiesPanel fields={fieldsFor(panelType)} values={panelVals} onChange={applyStyle} />
 
       <canvas
         ref={canvasRef}
@@ -618,30 +687,26 @@ function App() {  const canvasRef   = useRef<HTMLCanvasElement>(null)
           left         : textPos ? textPos.sx : -9999,
           top          : textPos ? textPos.sy : -9999,
           zIndex       : 99999,
-          fontSize     : editFontSize,
-          fontFamily   : "sans-serif",
-          lineHeight   : `${editFontSize * LINE_HEIGHT_RATIO}px`,
+          fontSize     : textStyle.fontSize,
+          fontFamily   : FONT_STACKS[textStyle.fontFamily],
+          textAlign    : textStyle.textAlign,
+          opacity      : textStyle.opacity / 100,
+          lineHeight   : `${textStyle.fontSize * LINE_HEIGHT_RATIO}px`,
           padding      : `${PAD_Y}px ${PAD_X}px`,
-          color        : strokeColor,
-          caretColor   : strokeColor,
+          color        : textStyle.strokeColor,
+          caretColor   : textStyle.strokeColor,
           background   : "transparent",
           border       : "none",
           outline      : "none",
           resize       : "none",
           overflow     : "hidden",
           minWidth     : "80px",
-          minHeight    : `${editFontSize * LINE_HEIGHT_RATIO + PAD_Y * 2}px`,
+          minHeight    : `${textStyle.fontSize * LINE_HEIGHT_RATIO + PAD_Y * 2}px`,
           whiteSpace   : "pre",
           boxSizing    : "border-box",
           pointerEvents: isEditing ? "auto" : "none",
         }}
-        onInput={(e) => {
-          const ta = e.currentTarget
-          ta.style.height = "auto"
-          ta.style.height = `${ta.scrollHeight}px`
-          ta.style.width  = "auto"
-          ta.style.width  = `${ta.scrollWidth + PAD_X * 2}px`
-        }}
+        onInput={(e) => fitTextarea(e.currentTarget)}
         onKeyDown={(e) => {
           if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); commitText() }
           if (e.key === "Escape")               { e.preventDefault(); cancelText() }
