@@ -1,5 +1,4 @@
-﻿import { Lock, Hand, MousePointer2, Square, Diamond, Circle, MoveUpRight, Minus, PenLine, Type, Image, Eraser, MoreHorizontal } from "lucide-react"
-import { useState } from "react"
+﻿import { Lock, Hand, MousePointer2, Square, Diamond, Circle, MoveUpRight, Minus, PenLine, Type, Eraser } from "lucide-react"
 
 const tools = [
     { id: "hand",     icon: Hand,          key: "H"  },
