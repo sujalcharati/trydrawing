@@ -2,6 +2,9 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react"
 import { ToolNavbar } from "./Components/ToolNavbar"
 import { PropertiesPanel, DEFAULT_STYLE, FONT_STACKS, fieldsFor } from "./Components/PropertiesPanel"
 import type { Style, StrokeStyle, FontFamily, TextAlign } from "./Components/PropertiesPanel"
+import { ShareButton } from "./Components/ShareButton"
+import { createRoomId, readRoomId, useCollab } from "./collab/useCollab"
+import type { PlainElement } from "./collab/CollabClient"
 
 type Point = { x: number; y: number }
 type ElementType = "pen" | "eraser" | "select" | "rectangle" | "diamond" | "ellipse" | "arrow" | "line" | "text" | "image"
@@ -271,6 +274,30 @@ function resizeElement(orig: Element, oldB: Bounds, handle: Handle, dx: number, 
   }
 }
 
+// Stable per-peer color so the same person keeps the same cursor color across redraws
+function peerColor(id: string): string {
+  let h = 0
+  for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) >>> 0
+  return `hsl(${h % 360} 80% 65%)`
+}
+
+function drawCursor(ctx: CanvasRenderingContext2D, x: number, y: number, color: string) {
+  ctx.save()
+  ctx.globalAlpha = 1
+  ctx.setLineDash([])
+  ctx.fillStyle   = color
+  ctx.strokeStyle = "#1e1e2e"
+  ctx.lineWidth   = 1.5
+  ctx.beginPath()
+  ctx.moveTo(x, y)
+  ctx.lineTo(x + 12, y + 4)
+  ctx.lineTo(x + 4, y + 12)
+  ctx.closePath()
+  ctx.fill()
+  ctx.stroke()
+  ctx.restore()
+}
+
 function fitTextarea(ta: HTMLTextAreaElement) {
   ta.style.height = "auto"
   ta.style.height = `${ta.scrollHeight}px`
@@ -306,6 +333,27 @@ function App() {
   const [textPos, setTextPos] = useState<{ x: number; y: number; sx: number; sy: number } | null>(null)
   const [isLocked, setIsLocked] = useState(false);
   const [isPanning, setIsPanning] = useState(false)
+  const [roomId, setRoomId] = useState(readRoomId)
+
+  // Remote edits are merged into the same element list the local tools use.
+  // The hook reads these callbacks through a ref, so they can reference redraw below.
+  const collab = useCollab({
+    roomId,
+    getElements: () => elementRefs.current as unknown as PlainElement[],
+    onRemoteChange: (upserts, removedIds) => {
+      const removed = new Set(removedIds)
+      let next = elementRefs.current.filter(el => !removed.has(el.id))
+      for (const incoming of upserts as unknown as Element[]) {
+        const idx = next.findIndex(el => el.id === incoming.id)
+        if (idx === -1) next = [...next, incoming]
+        else next = next.map((el, i) => (i === idx ? incoming : el))
+      }
+      elementRefs.current = next
+      redraw()
+      bump()
+    },
+    onCursorsChange: () => redraw(),
+  })
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -334,6 +382,9 @@ function App() {
       if (sel) drawSelection(ctx, getBounds(ctx, sel))
       else selectedIdRef.current = null
     }
+    for (const [id, c] of collab.getCursors()) drawCursor(ctx, c.x, c.y, peerColor(id))
+    // every local change ends in a redraw; the client diffs the scene and sends only what changed
+    collab.notifyChange()
     if (shownSelRef.current !== selectedIdRef.current) {
       shownSelRef.current = selectedIdRef.current
       bump()
@@ -557,6 +608,8 @@ function App() {
   }
 
   const handlePointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    const world = getPoint(e)
+    collab.sendCursor(world.x, world.y)
     if (panStartRef.current) {
       const { mouse, pan } = panStartRef.current
       panRef.current = { x: pan.x + e.clientX - mouse.x, y: pan.y + e.clientY - mouse.y }
@@ -658,6 +711,13 @@ function App() {
       <div className="fixed top-3 left-1/2 -translate-x-1/2 z-10">
         <ToolNavbar activeTool={activeTool} setActiveTool={setActiveTool} isLocked={isLocked} setIsLocked={setIsLocked} />
       </div>
+
+      <ShareButton
+        roomId={roomId}
+        state={collab.status.state}
+        peers={collab.status.peers}
+        onStart={() => setRoomId(createRoomId())}
+      />
 
       <PropertiesPanel fields={fieldsFor(panelType)} values={panelVals} onChange={applyStyle} />
 
